@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Monthly single-pair dynamic Lambda scheduler; email disabled in the handler.
+
+Parameters:
+  TargetLambdaName:
+    Type: String
+    AllowedPattern: "[A-Za-z0-9_-]+-dynScheduler"
+    MaxLength: 64
+  ScheduleInput:
+    Type: String
+    Description: JSON payload; target_lambda_name must match TargetLambdaName.
+    Default: >-
+      {"schedule_name":"example-monthly-schedule","schedule_description":"the Friday after the 1st Sunday","target_lambda_name":"example-dynScheduler","execution_time":"09:00:00","timezone":"America/New_York","bedrock_model_id":"amazon.nova-pro-v1:0","bedrock_region":"us-east-1","scheduled_at":"<aws.scheduler.scheduled-time>"}
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-pro-v1:0
+    AllowedValues: [amazon.nova-pro-v1:0]
+  BedrockRegion:
+    Type: String
+    Default: us-east-1
+    AllowedValues: [us-east-1]
+  EmailProvider:
+    Type: String
+    Default: ses
+    AllowedValues: [ses]
+  EmailSender:
+    Type: String
+    Default: ""
+  EmailRecipients:
+    Type: String
+    Default: "[]"
+    Description: JSON array of recipient email addresses; unused while email is disabled.
+  EmailMaxAttempts:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 3
+  EmailRetryBaseSeconds:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 2
+  EmailRecoveryPolicy:
+    Type: String
+    Default: manual
+    AllowedValues: [manual]
+
+Resources:
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  ScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+
+  MonthlyTriggerGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+
+  TargetInvocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !GetAtt ScheduleGroup.Arn
+      Policies:
+        - PolicyName: InvokeConfiguredTarget
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${TargetLambdaName}
+
+  SchedulerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      CodeUri: src/
+      Timeout: 120
+      MemorySize: 256
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref StateTable
+          SCHEDULE_GROUP: !Ref ScheduleGroup
+          TARGET_LAMBDA_ARN: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${TargetLambdaName}
+          SCHEDULER_ROLE_ARN: !GetAtt TargetInvocationRole.Arn
+          ALLOWED_BEDROCK_MODEL_ID: !Ref BedrockModelId
+          ALLOWED_BEDROCK_REGION: !Ref BedrockRegion
+          EMAIL_PROVIDER: !Ref EmailProvider
+          EMAIL_SENDER: !Ref EmailSender
+          EMAIL_RECIPIENTS: !Ref EmailRecipients
+          EMAIL_MAX_ATTEMPTS: !Ref EmailMaxAttempts
+          EMAIL_RETRY_BASE_SECONDS: !Ref EmailRetryBaseSeconds
+          EMAIL_RECOVERY_POLICY: !Ref EmailRecoveryPolicy
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+              Resource: !GetAtt StateTable.Arn
+            - Effect: Allow
+              Action: [scheduler:CreateSchedule, scheduler:GetSchedule, scheduler:DeleteSchedule]
+              Resource: !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${ScheduleGroup}/*
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt TargetInvocationRole.Arn
+              Condition:
+                StringEquals:
+                  iam:PassedToService: scheduler.amazonaws.com
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:${AWS::Partition}:bedrock:${BedrockRegion}::foundation-model/${BedrockModelId}
+
+  MonthlyInvocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !GetAtt MonthlyTriggerGroup.Arn
+      Policies:
+        - PolicyName: InvokeScheduler
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt SchedulerFunction.Arn
+
+  MonthlyTrigger:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      GroupName: !Ref MonthlyTriggerGroup
+      ScheduleExpression: cron(0 1 1 * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt SchedulerFunction.Arn
+        RoleArn: !GetAtt MonthlyInvocationRole.Arn
+        Input: !Ref ScheduleInput
+        RetryPolicy:
+          MaximumRetryAttempts: 2
+          MaximumEventAgeInSeconds: 3600
+
+Outputs:
+  SchedulerFunctionArn:
+    Value: !GetAtt SchedulerFunction.Arn
+  StateTableName:
+    Value: !Ref StateTable

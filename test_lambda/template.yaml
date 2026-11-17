@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Standalone harmless target for testing dynamic schedules.
+
+Resources:
+  TestScheduleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: test-schedule-lambda-dynScheduler
+      Runtime: python3.12
+      Handler: app.lambda_handler
+      CodeUri: .
+      Timeout: 10
+      MemorySize: 128
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+Outputs:
+  TestScheduleFunctionName:
+    Value: !Ref TestScheduleFunction
+  TestScheduleFunctionArn:
+    Value: !GetAtt TestScheduleFunction.Arn

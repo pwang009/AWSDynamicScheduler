@@ -1,0 +1,11 @@
+.aws-sam/
+.venv/
+__pycache__/
+*.pyc
+tf/.terraform/
+tf/.build/
+tf/*.tfstate
+tf/*.tfstate.*
+tf/*.tfplan
+tf/*.tfvars
+tf/crash.log

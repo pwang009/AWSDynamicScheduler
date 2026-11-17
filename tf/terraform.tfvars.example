@@ -1,0 +1,19 @@
+project_name            = "dynamic-lambda-scheduler"
+aws_region              = "us-east-1"
+schedule_name           = "example-monthly-schedule"
+schedule_description    = "the Friday after the 1st Sunday"
+execution_time          = "09:00:00"
+timezone                = "America/New_York"
+bedrock_model_id        = "amazon.nova-pro-v1:0"
+bedrock_region          = "us-east-1"
+monthly_trigger_enabled = true
+
+# These are environment settings only. Email remains commented out in Python.
+email = {
+  provider           = "ses"
+  sender             = ""
+  recipients         = []
+  max_attempts       = 3
+  retry_base_seconds = 1
+  recovery_policy    = "manual"
+}
