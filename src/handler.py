@@ -74,7 +74,9 @@ def lambda_handler(event: object, context: Any) -> dict[str, str]:
         plan = saved["plan"]
     else:
         client = boto3.client("bedrock-runtime", region_name=inputs["bedrock_region"], config=config)
-        rule = parse_description(client, inputs["bedrock_model_id"], inputs["schedule_description"])
+        current_date = reference.astimezone(ZoneInfo(inputs["timezone"])).strftime("%m/%d/%Y")
+        description = f"{inputs['schedule_description']}, current date: {current_date}"
+        rule = parse_description(client, inputs["bedrock_model_id"], description)
         execution = resolve_date(rule, inputs["execution_time"], ZoneInfo(inputs["timezone"]), reference)
         plan = state.save_plan(f"plan#{job}", {
             **inputs,

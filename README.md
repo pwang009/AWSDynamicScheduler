@@ -25,6 +25,16 @@ month. Unsupported/ambiguous rules, missing ordinal occurrences, and DST gaps
 or repeated times are explicit errors. Future dates can cross month/year
 boundaries. The target receives `{}`.
 
+Before sending a description to Bedrock, the handler appends
+`, current date: MM/DD/YYYY`, for example
+`the Friday after the 1st Sunday, current date: 11/17/2026`.
+The date uses the input timezone and the invocation's reference timestamp
+(`scheduled_at` when supplied, otherwise the current invocation time).
+The original description is preserved in saved plans and responses. Existing
+saved plans bypass Bedrock. This context does not extend the supported rule
+schema: quarter-end descriptions still require additional parsing/calculation
+support.
+
 `schedule_name` is required: 1-64 letters, digits, underscores, dots, or
 hyphens. For each new logical job (input configuration/reference month),
 delete any schedule with that name in the configured group, then create the

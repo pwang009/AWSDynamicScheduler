@@ -153,8 +153,14 @@ provisioned capacity is required for this design.
 The workflow is:
 
 1. Validate the required input fields.
-2. Send the description to Bedrock with instructions defining the supported
-   rule schema, weekday names, ordinals, and relationship semantics.
+2. Append `, current date: MM/DD/YYYY` to the description before sending it to
+   Bedrock, using the invocation's reference date in the input timezone.
+   For example: `2nd of the month after this quarter end, current date: 11/17/2026`.
+   Use `scheduled_at` as the reference when supplied; otherwise use the current
+   invocation timestamp. Preserve the original input description in plans and
+   responses. Include instructions defining the supported rule schema,
+   weekday names, ordinals, and relationship semantics. The date suffix does
+   not itself add quarter-end rules to the supported schema.
 3. Request structured JSON representing the rule, not a calendar date.
 4. Validate the returned JSON against the supported schema.
 5. Calculate the date in Python using that validated rule.
@@ -371,6 +377,8 @@ intended target resources.
 
 - Verify Bedrock requests include the description and supported rule schema,
   and that valid model output reaches the deterministic date calculator.
+- Verify the description sent to Bedrock ends in `, current date: MM/DD/YYYY`,
+  including UTC/local date boundaries and supplied reference timestamps.
 - Verify the Bedrock client uses input Region `us-east-1` and invokes input
   model ID `amazon.nova-pro-v1:0`, without changing the Scheduler Region.
 - Reject missing or unapproved model/Region inputs without a fallback or

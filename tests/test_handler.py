@@ -67,13 +67,32 @@ class HandlerTests(unittest.TestCase):
         parse.return_value = Rule(4, 1, 6)
         resolve.return_value = datetime.fromisoformat("2026-11-06T09:00:00-05:00")
         create.return_value = {"schedule_name": "name", "status": "created"}
-        result = handler.lambda_handler(EVENT, Mock())
-        self.assertEqual(result["notification_status"], "disabled")
-        boto.client.assert_any_call("bedrock-runtime", region_name="us-east-1", config=unittest.mock.ANY)
-        self.assertNotIn("sesv2", [call.args[0] for call in boto.client.call_args_list])
-        self.assertEqual(create.call_args.args[2]["execution_date"], "2026-11-06")
-        self.assertEqual(create.call_args.args[2]["schedule_name"], EVENT["schedule_name"])
-        self.assertEqual(len(create.call_args.args[2]["job_id"]), 64)
+        manual_event = {
+            **{key: value for key, value in EVENT.items() if key != "scheduled_at"},
+            "schedule_description": "2nd of the month after this quarter end",
+        }
+        cases = (
+            (EVENT, "11/01/2026"),
+            ({**EVENT, "scheduled_at": "2026-11-01T02:00:00Z"}, "10/31/2026"),
+            (manual_event, "11/17/2026"),
+        )
+        with patch("handler.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime.fromisoformat("2026-11-18T02:00:00+00:00")
+            for event, expected_date in cases:
+                with self.subTest(expected_date=expected_date):
+                    result = handler.lambda_handler(event, Mock())
+                    parse.assert_called_with(
+                        boto.client.return_value,
+                        event["bedrock_model_id"],
+                        f"{event['schedule_description']}, current date: {expected_date}",
+                    )
+                    self.assertEqual(result["notification_status"], "disabled")
+                    boto.client.assert_any_call("bedrock-runtime", region_name="us-east-1", config=unittest.mock.ANY)
+                    self.assertNotIn("sesv2", [call.args[0] for call in boto.client.call_args_list])
+                    self.assertEqual(create.call_args.args[2]["execution_date"], "2026-11-06")
+                    self.assertEqual(create.call_args.args[2]["schedule_name"], EVENT["schedule_name"])
+                    self.assertEqual(create.call_args.args[2]["schedule_description"], event["schedule_description"])
+                    self.assertEqual(len(create.call_args.args[2]["job_id"]), 64)
 
     @patch("handler.State")
     @patch("handler.boto3")
