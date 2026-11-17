@@ -1,55 +1,62 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from schedule_description import Rule, local_timestamp, resolve_date, validate_rule
+from schedule_description import local_timestamp, resolve_date, validate_date
 
 
 class DateTests(unittest.TestCase):
-    def test_examples_and_boundary(self):
+    def test_resolved_dates_preserve_time_and_timezone(self):
         zone = ZoneInfo("America/New_York")
-        for reference in ("2026-11-17T09:00:00-05:00", "2026-12-01T01:00:00-05:00",
-                          "2026-11-06T09:00:00-05:00"):
-            with self.subTest(reference=reference):
-                result = resolve_date(Rule(4, 1, 6), "09:00:00", zone, datetime.fromisoformat(reference))
-                self.assertEqual(result.isoformat(), "2026-12-11T09:00:00-05:00")
+        for day, expected in (
+            ("2026-12-11", "2026-12-11T09:00:00-05:00"),
+            ("2027-01-02", "2027-01-02T09:00:00-05:00"),
+            ("2028-02-29", "2028-02-29T09:00:00-05:00"),
+            ("2027-07-02", "2027-07-02T09:00:00-04:00"),
+        ):
+            with self.subTest(day=day):
+                result = resolve_date(validate_date({"execution_date": day}), "09:00:00", zone,
+                                      datetime.fromisoformat("2026-11-17T09:00:00-05:00"))
+                self.assertEqual(result.isoformat(), expected)
 
-    def test_cross_year_same_weekday_and_leap_year(self):
-        zone = ZoneInfo("UTC")
-        cases = [
-            (Rule(0, 4, 3), "2026-12-01", "2026-12-28"),
-            (Rule(0, 5, 3), "2026-12-01", "2027-01-04"),
-            (Rule(6, 1, 6), "2026-12-01", "2026-12-13"),
-            (Rule(4, 4, 3), "2024-02-01", "2024-02-23"),
-        ]
-        for rule, start, expected in cases:
-            with self.subTest(rule=rule):
-                result = resolve_date(rule, "09:00:00", zone, datetime.fromisoformat(start).replace(tzinfo=zone))
-                self.assertEqual(str(result.date()), expected)
+    def test_nonfuture_dates_are_rejected_not_rolled_forward(self):
+        zone = ZoneInfo("America/New_York")
+        reference = datetime.fromisoformat("2026-11-18T02:00:00+00:00")
+        for day, clock in ((date(2026, 11, 16), "23:59:59"),
+                           (date(2026, 11, 17), "20:59:59"),
+                           (date(2026, 11, 17), "21:00:00")):
+            with self.subTest(day=day, clock=clock), self.assertRaisesRegex(ValueError, "future"):
+                resolve_date(day, clock, zone, reference)
+        self.assertEqual(resolve_date(date(2026, 11, 17), "21:00:01", zone, reference).isoformat(),
+                         "2026-11-17T21:00:01-05:00")
 
-    def test_invalid_fifth_weekday(self):
-        with self.assertRaisesRegex(ValueError, "does not exist"):
-            resolve_date(Rule(4, 5, 6), "09:00:00", ZoneInfo("UTC"), datetime(2026, 2, 1, tzinfo=timezone.utc))
+    def test_naive_reference_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "timezone"):
+            resolve_date(date(2027, 1, 2), "09:00:00", ZoneInfo("UTC"), datetime(2026, 11, 17))
 
     def test_dst_gaps_and_folds_are_rejected(self):
         for clock in (datetime(2026, 3, 8, 2, 30), datetime(2026, 11, 1, 1, 30)):
             with self.subTest(clock=clock), self.assertRaises(ValueError):
-                local_timestamp(clock, ZoneInfo("America/New_York"))
+                resolve_date(clock.date(), clock.strftime("%H:%M:%S"), ZoneInfo("America/New_York"),
+                             datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     def test_eastern_offsets(self):
         for month, offset in ((1, -5 * 3600), (7, -4 * 3600)):
             result = local_timestamp(datetime(2026, month, 1, 9), ZoneInfo("America/New_York"))
             self.assertEqual(result.utcoffset().total_seconds(), offset)
 
-    def test_rule_validation(self):
-        good = {"target_weekday": "Friday", "relationship": "strictly_after",
-                "anchor_ordinal": 1, "anchor_weekday": "Sunday"}
-        self.assertEqual(validate_rule(good), Rule(4, 1, 6))
+    def test_model_date_validation(self):
+        good = {"execution_date": "2027-01-02"}
+        self.assertEqual(validate_date(good), date(2027, 1, 2))
         invalid = [
-            {**good, "anchor_ordinal": True}, {**good, "anchor_ordinal": 6},
-            {**good, "target_weekday": "Fri"}, {**good, "relationship": "before"},
-            {**good, "target_arn": "untrusted"}, {"error": "ambiguous"}, [],
+            {"execution_date": value} for value in (
+                True, None, 20270102, "2027-1-2", "20270102", "01/02/2027",
+                "2027-02-29", "2026-04-31", "2027-01-02T09:00:00", "2027-01-02 ",
+                "0000-01-01", "10000-01-01",
+            )
         ]
+        invalid += [{**good, "target_arn": "untrusted"}, {**good, "timezone": "UTC"},
+                    {"error": "ambiguous"}, {}, [], {"target_weekday": "Friday"}]
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
-                validate_rule(value)
+                validate_date(value)

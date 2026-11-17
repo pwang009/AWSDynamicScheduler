@@ -1,0 +1,9 @@
+{
+  "schedule_name": "example-monthly-schedule3",
+  "schedule_description": "2nd of the month after this quarter end",
+  "target_lambda_name": "test-schedule-lambda-dynScheduler",
+  "execution_time": "09:00:00",
+  "timezone": "America/New_York",
+  "bedrock_model_id": "amazon.nova-pro-v1:0",
+  "bedrock_region": "us-east-1"
+}

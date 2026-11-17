@@ -94,6 +94,55 @@ the function-name suffix of `TARGET_LAMBDA_ARN`. Keep the account/Region
 consistent. Verify scheduled invocations in the target's CloudWatch log group
 `/aws/lambda/test-schedule-lambda-dynScheduler`.
 
+## Invoke the deployed scheduler from your laptop
+
+Use a JSON payload in [events/](events/) to invoke the scheduler already
+deployed in CBSB. Install AWS CLI v2 and configure your AWS defaults or environment.
+Docker, SAM, and a local environment-variable file are not needed for this
+method; the deployed Lambda uses its own role and environment.
+
+From the project root:
+
+```bash
+aws sts get-caller-identity
+
+./invoke.sh currentdatetest.json
+# An events/ prefix and filenames containing spaces are also accepted:
+./invoke.sh "events/FriAfter1stSun copy.json"
+```
+
+[invoke.sh](invoke.sh) prints the Lambda response and writes it to the
+project-root `response.json`, regardless of the caller's working directory.
+It exits nonzero for invalid input, AWS CLI failures, or Lambda `FunctionError`
+responses. It uses your configured AWS account/Region without explicit CLI flags.
+
+Equivalent direct invocation:
+
+```bash
+aws lambda invoke \
+  --function-name dynamic-lambda-scheduler-scheduler \
+  --payload file://events/currentdatetest.json \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+
+cat response.json
+```
+
+Confirm the account before invoking. Your laptop's identity needs
+`lambda:InvokeFunction` permission on the scheduler Lambda. The Lambda's
+execution role supplies downstream service access.
+
+This makes real Bedrock calls, writes state, and creates/replaces
+`example-monthly-schedule` in the generated schedule group. Change the
+`schedule_name` in the payload if you want a separate test name. Email remains
+disabled. The target will run at the resolved future date/time.
+
+Expected: no `FunctionError` in the CLI metadata, and `status: "created"` or
+`"already_exists"` in the response with the schedule name/ARN and execution
+date. HTTP status 200 alone does not mean the function succeeded.
+`scheduled_at` is intentionally omitted so the first invocation resolves
+against the current time; duplicate-job behavior still applies.
+
 ## 4. Optional: invoke locally against real AWS services
 
 **Warning:** Docker runs the Lambda locally, but Bedrock, DynamoDB, and
@@ -124,13 +173,14 @@ avoid unintended recurring invocations.
 
 ### Create the event file
 
-Create `events/test.json` with:
+Use [events/test.json](events/test.json), adjusting the following values if
+testing against a different deployment:
 
 ```json
 {
   "schedule_name": "example-monthly-schedule",
   "schedule_description": "the Friday after the 1st Sunday",
-  "target_lambda_name": "example-dynScheduler",
+  "target_lambda_name": "test-schedule-lambda-dynScheduler",
   "execution_time": "09:00:00",
   "timezone": "America/New_York",
   "bedrock_model_id": "amazon.nova-pro-v1:0",
@@ -138,7 +188,7 @@ Create `events/test.json` with:
 }
 ```
 
-Replace `example-dynScheduler` with your actual test target name. Keep the
+Replace `test-schedule-lambda-dynScheduler` if using a different test target. Keep the
 description within the supported rule type.
 
 Choose a test-only `schedule_name` (1-64 letters, digits, underscores, dots,
@@ -165,7 +215,7 @@ Create `env.local.json` at the project root:
   "SchedulerFunction": {
     "STATE_TABLE": "your-test-state-table",
     "SCHEDULE_GROUP": "your-test-schedule-group",
-    "TARGET_LAMBDA_ARN": "arn:aws:lambda:us-east-1:123456789012:function:example-dynScheduler",
+    "TARGET_LAMBDA_ARN": "arn:aws:lambda:us-east-1:123456789012:function:test-schedule-lambda-dynScheduler",
     "SCHEDULER_ROLE_ARN": "arn:aws:iam::123456789012:role/your-test-scheduler-invocation-role",
     "ALLOWED_BEDROCK_MODEL_ID": "amazon.nova-pro-v1:0",
     "ALLOWED_BEDROCK_REGION": "us-east-1"

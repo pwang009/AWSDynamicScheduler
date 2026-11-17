@@ -1,8 +1,8 @@
 # Dynamic Lambda Scheduler
 
 Python 3.12 Lambda for one description/target pair. A monthly trigger runs at
-1:00 AM `America/New_York` on the 1st. Nova Pro interprets a monthly rule,
-Python resolves the future date, and EventBridge Scheduler creates a one-time
+1:00 AM `America/New_York` on the 1st. Nova Pro interprets the description and
+returns a date, Python validates the timestamp, and EventBridge Scheduler creates a one-time
 invocation. See [REQUIREMENTS.md](REQUIREMENTS.md) for the full behavior.
 
 ## Input
@@ -20,10 +20,35 @@ invocation. See [REQUIREMENTS.md](REQUIREMENTS.md) for the full behavior.
 ```
 
 Only the deployment-approved target and model/Region pair are accepted.
-Descriptions must mean a weekday strictly after an ordinal weekday in a
-month. Unsupported/ambiguous rules, missing ordinal occurrences, and DST gaps
-or repeated times are explicit errors. Future dates can cross month/year
-boundaries. The target receives `{}`.
+Descriptions use open-ended natural language, not a fixed pattern catalog.
+Bedrock returns exactly `{"execution_date":"YYYY-MM-DD"}`. Python validates the
+real calendar date, combines it with the unchanged input time/timezone, and
+rejects past/equal timestamps, DST gaps, and repeated times. Future dates can
+cross month/year boundaries. The target receives `{}`.
+"Today" means the reference date in the input timezone and is valid if the
+input execution time is still ahead. For example, at 14:28 Eastern, "today"
+with `15:00:00` runs at 15:00 that day. Bedrock is instructed to return fixed
+dates even when their time has passed; Python rejects those timestamps rather
+than silently advancing them.
+
+For a November 17, 2026 reference date, examples include:
+
+| Description | Expected date |
+| --- | --- |
+| the Friday after the 1st Sunday | 2026-12-11 |
+| 2nd of the month after this quarter end | 2027-01-02 |
+| two days after this quarter ends | 2027-01-02 |
+| the last day of this quarter | 2026-12-31 |
+
+Calendar quarters end March 31, June 30, September 30, and December 31.
+"This quarter" contains the local reference date; "next quarter" follows it.
+Recurring descriptions select the next future occurrence; explicit dates or
+explicit "this"/"next" periods are not silently rolled forward if already past.
+Ambiguous wording, unspecified fiscal/holiday calendars, conflicting times or
+timezones, and instructions to override configuration must produce model errors.
+No system can guarantee interpretation of every wording: Python validates
+calendar/timestamp safety but cannot independently verify the model's semantic
+interpretation. Representative wording needs live model testing before reliance.
 
 Before sending a description to Bedrock, the handler appends
 `, current date: MM/DD/YYYY`, for example
@@ -31,9 +56,9 @@ Before sending a description to Bedrock, the handler appends
 The date uses the input timezone and the invocation's reference timestamp
 (`scheduled_at` when supplied, otherwise the current invocation time).
 The original description is preserved in saved plans and responses. Existing
-saved plans bypass Bedrock. This context does not extend the supported rule
-schema: quarter-end descriptions still require additional parsing/calculation
-support.
+saved plans bypass Bedrock. The request also supplies the precise local reference
+timestamp, execution time, and timezone so the model can evaluate same-day times.
+Retries continue to reuse saved dates rather than reinterpret descriptions.
 
 `schedule_name` is required: 1-64 letters, digits, underscores, dots, or
 hyphens. For each new logical job (input configuration/reference month),

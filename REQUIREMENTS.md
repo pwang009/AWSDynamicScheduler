@@ -31,9 +31,10 @@
   rather than fixed EST year-round.
 - Translate the description into a calendar date and create a one-time Amazon
   EventBridge Scheduler schedule that invokes the target Lambda on that date.
-- Use an Amazon Bedrock LLM to translate the description into a validated
-  structured rule. Calculate the actual date deterministically in Python,
-  rather than asking the LLM to perform calendar arithmetic.
+- Use an Amazon Bedrock LLM to resolve open-ended descriptions to a calendar
+  date, rather than restricting input to a fixed rule catalog. Python strictly
+  validates the date and combined execution timestamp; it does not independently
+  verify the model's interpretation or calendar arithmetic.
 - Return the created schedule's identity and resolved execution date.
 - Create the next future occurrence of the rule. Execution may be in the
   current month or a later month, including a later year.
@@ -61,7 +62,7 @@ eventBridgeSchedule/
   src/
     handler.py               # Validate event and coordinate the workflow
     bedrock_parser.py        # Invoke Bedrock to interpret descriptions
-    schedule_description.py  # Validate structured rules and calculate dates
+    schedule_description.py  # Validate model dates and local execution timestamps
     scheduler.py             # Create the one-time schedule using boto3
     notifications.py         # SES email support; handler integration commented out
     state.py                 # Persist plans, retry budgets, and delivery state
@@ -75,7 +76,7 @@ eventBridgeSchedule/
   README.md                  # Configuration, supported wording, deployment
 ```
 
-Keep rule validation and date calculation independent of AWS calls so they
+Keep date and timestamp validation independent of AWS calls so they
 can be tested without deploying resources. Isolate Bedrock, Scheduler, and email
 calls so unit tests can mock them. Use AWS SAM for infrastructure.
 
@@ -158,40 +159,40 @@ The workflow is:
    For example: `2nd of the month after this quarter end, current date: 11/17/2026`.
    Use `scheduled_at` as the reference when supplied; otherwise use the current
    invocation timestamp. Preserve the original input description in plans and
-   responses. Include instructions defining the supported rule schema,
-   weekday names, ordinals, and relationship semantics. The date suffix does
-   not itself add quarter-end rules to the supported schema.
-3. Request structured JSON representing the rule, not a calendar date.
-4. Validate the returned JSON against the supported schema.
-5. Calculate the date in Python using that validated rule.
+   responses. Supply the precise local reference timestamp, execution time,
+   and timezone separately as context.
+3. Ask Bedrock to interpret the wording and return a concrete calendar date.
+4. Require exactly one `execution_date` string in strict `YYYY-MM-DD` format;
+   reject extra/missing fields, incorrect types, and impossible calendar dates.
+5. Accept open-ended wording, including quarter ends, rather than enforcing a
+   fixed natural-language pattern catalog.
 6. Combine the date with the input time and timezone, validate the execution
    timestamp, and delete any existing same-name schedule before creating the
    replacement, except when recovering the same job's confirmed replacement.
 7. Leave the email call commented out and report notifications as disabled.
    When explicitly enabled later, send only after confirming creation.
 
-For example, "the Friday after the 1st Sunday" should produce:
+For example, "2nd of the month after this quarter end", with a local reference
+date of November 17, 2026, should produce:
 
 ```json
 {
-  "target_weekday": "Friday",
-  "relationship": "strictly_after",
-  "anchor_ordinal": 1,
-  "anchor_weekday": "Sunday"
+  "execution_date": "2027-01-02"
 }
 ```
 
-Initially support rules of the form "weekday strictly after the ordinal
-weekday of a month", including equivalent natural-language wording. Weekdays
-must be full English weekday names, `anchor_ordinal` must be an integer from
-1 through 5, and `relationship` must be `strictly_after`. Require exactly the
-four fields shown above; reject missing fields, unknown fields, incorrect
-types, and unsupported values.
+Calendar quarters end March 31, June 30, September 30, and December 31.
+"This quarter" contains the reference date in the input timezone;
+"next quarter" is the following quarter. On November 17, 2026, "two days after
+this quarter ends" also means January 2, 2027, and "the last day of this quarter"
+means December 31, 2026. Other unambiguous wording is not excluded by a pattern
+allowlist.
 
-The LLM must report ambiguous or unsupported descriptions explicitly rather
-than guessing a rule. Treat those outcomes as errors, not executable rules.
-Additional rule types require defined semantics, schema changes, and tests;
-using an LLM does not make arbitrary scheduling language supported.
+The LLM must return `{"error":"<specific reason>"}` for ambiguity, missing
+fiscal/holiday calendar information, conflicting time/timezone instructions,
+nonexistent ordinal occurrences, or descriptions with no possible recurring occurrence.
+Surface that reason explicitly and create no schedule. Open-ended wording
+does not guarantee that every phrase is interpretable.
 
 Treat the description and model response as untrusted data. Do not follow
 instructions embedded in the description or allow the model to choose the
@@ -199,7 +200,7 @@ target Lambda, execution time, timezone, IAM role, or AWS API operations.
 The model has no tools or direct ability to create schedules.
 
 Surface Bedrock failures, refused or truncated responses, invalid JSON, and
-invalid rules explicitly. Do not create a schedule on any such failure, and
+invalid dates explicitly. Do not create a schedule on any such failure, and
 do not silently fall back to a guessed rule or date. Structural validation
 does not guarantee semantic accuracy, so test representative wording and
 ambiguous requests against the selected model before deployment.
@@ -214,7 +215,7 @@ ambiguous requests against the selected model before deployment.
   complete any applicable model-access requirements.
 - Request JSON through the prompt and validate it in application code. Nova
   Pro does not support Bedrock's native Structured Outputs feature; do not
-  assume the service enforces the rule schema.
+  assume the service enforces the response schema.
 - Deploy in commercial `us-east-1`; this implementation does not support a
   GovCloud-to-commercial cross-partition integration.
 - Grant the scheduler Lambda execution role narrowly scoped
@@ -225,30 +226,34 @@ ambiguous requests against the selected model before deployment.
 - Unit tests must mock Bedrock; live model tests require explicit
   authorization because they incur usage costs.
 
-### Calendar calculation
+### Date interpretation and Python validation
 
-Use Python's standard-library `datetime` and `calendar` modules. For a selected
-year and month:
+Bedrock performs calendar interpretation and chooses the next future date at
+the supplied execution time. For recurring wording without an explicit period,
+advance to its next occurrence when necessary. Keep existing weekday semantics:
+"after" is strict (the same weekday means seven days later), and offsets may
+cross months/years. Explicit dates and "this"/"next" periods must not be silently
+advanced if their execution is already past.
 
-1. Construct the first day of that month.
-2. Find the first anchor weekday using Python weekday numbers
-   (Monday = 0, Sunday = 6):
-   `offset = (anchor_weekday - first_day.weekday()) % 7`.
-3. Find the requested ordinal occurrence:
-   `anchor_day = 1 + offset + 7 * (ordinal - 1)`.
-4. Reject a nonexistent anchor, such as a 5th Sunday in a month with only four.
-5. Find the target weekday strictly after the anchor:
-   `days_after = (target_weekday - anchor_weekday) % 7`.
-   If the result is zero, use seven days, not zero.
-6. Add `days_after` days to the anchor date.
-7. Combine the resulting date with the input execution time and input timezone
-   before creating the AWS schedule. Validate the timezone with the
-   standard-library `zoneinfo` module.
-   Reject nonexistent or repeated local times at daylight saving transitions,
-   as confirmed for the initial implementation.
-8. If the timestamp is not strictly in the future, advance the anchor month
-   and repeat the calculation until a future occurrence is found. Allow the
-   calculated target date to cross month or year boundaries.
+"Today" must resolve to the local reference date, not be rejected solely for
+being the same calendar date. At 14:28 Eastern on November 17, 2026, "today"
+with execution time `15:00:00` means `2026-11-17T15:00:00-05:00`.
+Bedrock returns fixed dates, including elapsed ones, and Python enforces
+timestamp eligibility; equal/past times fail without rolling the date forward.
+
+Python validates with standard-library `date`, `datetime`, and `zoneinfo`:
+
+1. Validate the exact response fields and strict date string, then reject
+   impossible dates with `date.fromisoformat`.
+2. Combine the date with the input execution time and input timezone.
+3. Reject nonexistent or repeated local times using UTC round trips and folds.
+4. Require a timezone-aware reference and a timestamp strictly later than it.
+   If the model returns a past/equal timestamp, fail explicitly rather than
+   rolling forward or silently retrying inference.
+
+Python cannot prove that a valid future date matches the description's meaning.
+Mocked tests validate the application contract, not live model interpretation.
+Representative live wording tests require explicit authorization.
 
 ### Worked example
 
@@ -267,7 +272,7 @@ Future-occurrence behavior:
 - Evaluate "today" and "passed" in the input timezone, not the host's
   implicit timezone.
 - Allow weekday offsets to spill into the following month or year.
-- Continue to reject nonexistent ordinal occurrences explicitly.
+- Instruct Bedrock to reject nonexistent ordinal occurrences explicitly.
 - Creation retries must reuse the resolved timestamp rather than select a
   different occurrence. If it is no longer in the future, report an explicit
   failure instead of silently rescheduling it.
@@ -375,15 +380,16 @@ intended target resources.
 
 ## Focused acceptance tests
 
-- Verify Bedrock requests include the description and supported rule schema,
-  and that valid model output reaches the deterministic date calculator.
+- Verify Bedrock requests include the description, date response schema,
+  precise reference timestamp, input execution time, and timezone; verify valid
+  model dates reach Python timestamp validation.
 - Verify the description sent to Bedrock ends in `, current date: MM/DD/YYYY`,
   including UTC/local date boundaries and supplied reference timestamps.
 - Verify the Bedrock client uses input Region `us-east-1` and invokes input
   model ID `amazon.nova-pro-v1:0`, without changing the Scheduler Region.
 - Reject missing or unapproved model/Region inputs without a fallback or
   model invocation.
-- Mock ambiguous/unsupported outcomes, invalid JSON, invalid rule fields,
+- Mock ambiguous outcomes, invalid JSON, extra/missing fields, impossible dates,
   refusals, truncation, and service errors; none may create an AWS schedule.
 - Verify model output cannot override the target Lambda, time, timezone, or
   invocation role.
@@ -393,12 +399,14 @@ intended target resources.
   has passed.
 - Accept future dates outside the current month, including weekday offsets
   crossing a month or year boundary.
-- An occurrence at or before the reference timestamp advances to a later
-  occurrence; creation retries remain pinned to the original resolved timestamp.
-- When target and anchor weekdays are equal, "after" advances seven days.
-- Reject unsupported wording, nonexistent ordinal weekdays, and target names
-  that do not end in `-dynScheduler`.
-- Cover year rollover and leap-year calendar calculations.
+- Instruct Bedrock to advance recurring occurrences that have passed. Python
+  rejects returned timestamps at or before the reference without changing them;
+  creation retries remain pinned to the original resolved timestamp.
+- Instruct Bedrock that equal target/anchor weekdays mean seven days after.
+- Reject model-reported ambiguity and target names not ending in `-dynScheduler`.
+- Cover returned quarter-end dates, year rollover, leap-day validity, same-day
+  future/past boundaries, and explicit model errors. Mocked dates do not prove
+  the model correctly interprets these phrases; live tests are separate.
 - Verify that the input execution time is preserved in the response and AWS
   schedule expression, including boundary values `00:00:00` and `23:59:59`.
 - Reject missing or malformed execution times and out-of-range values such as

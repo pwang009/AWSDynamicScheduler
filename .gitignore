@@ -9,3 +9,4 @@ tf/*.tfstate.*
 tf/*.tfplan
 tf/*.tfvars
 tf/crash.log
+/response.json
