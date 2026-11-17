@@ -18,6 +18,25 @@ out; environment variables are configured but no SES identity or sending
 permission is created. Bedrock is managed by AWS; no model server is deployed.
 Model access/agreements must be completed separately.
 
+## Module structure
+
+- [modules/lambda_function/](modules/lambda_function/): Python 3.12 Lambda,
+  execution role/policy, log group, and optional asynchronous retry settings.
+  Used for both the scheduler and the test target.
+- [modules/scheduler_invocation/](modules/scheduler_invocation/): schedule
+  group and a group-scoped Scheduler trust role allowed to invoke one Lambda.
+  Used separately for generated schedules and the monthly trigger.
+- [main.tf](main.tf): composes those modules with the state table, packages,
+  application-specific permissions, event inputs, and monthly schedule.
+- [moved.tf](moved.tf): maps the original root resource addresses into modules.
+  Keep these blocks so existing deployments migrate without recreation.
+
+Existing deployments must run `terraform init` after this refactor to discover
+the local modules. Review a new plan: expect address moves and **zero resources
+to add, change, or destroy**. Applying that reviewed plan records the module
+addresses in state without changing the AWS resources. Root variables, outputs,
+resource names, IAM permissions, and behavior remain unchanged.
+
 ## Prerequisites
 
 - Terraform 1.7 or later (before 2.0), Python 3.12, and pip.

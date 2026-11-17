@@ -1,17 +1,17 @@
 output "scheduler_function_name" {
-  value = aws_lambda_function.scheduler.function_name
+  value = module.scheduler.function.function_name
 }
 
 output "scheduler_function_arn" {
-  value = aws_lambda_function.scheduler.arn
+  value = module.scheduler.function.arn
 }
 
 output "test_target_function_name" {
-  value = aws_lambda_function.test_target.function_name
+  value = module.test_target.function.function_name
 }
 
 output "test_target_function_arn" {
-  value = aws_lambda_function.test_target.arn
+  value = module.test_target.function.arn
 }
 
 output "state_table_name" {
@@ -19,11 +19,11 @@ output "state_table_name" {
 }
 
 output "schedule_group_name" {
-  value = aws_scheduler_schedule_group.generated.name
+  value = module.target_invocation.group.name
 }
 
 output "target_invocation_role_arn" {
-  value = aws_iam_role.target_invocation.arn
+  value = module.target_invocation.role_arn
 }
 
 output "monthly_trigger_name" {
