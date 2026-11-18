@@ -1,11 +1,52 @@
 # Dynamic Lambda Scheduler
 
-Python 3.12 Lambda for one description/target pair. A monthly trigger runs at
-1:00 AM `America/New_York` on the 1st. Nova Pro interprets the description and
-returns a date, Python validates the timestamp, and EventBridge Scheduler creates a one-time
-invocation. See [REQUIREMENTS.md](REQUIREMENTS.md) for the full behavior.
+A Python 3.12 AWS Lambda application that turns one natural-language schedule
+description into a future, one-time EventBridge Scheduler invocation.
 
-## Input
+The scheduler Lambda:
+
+1. Validates the description, target Lambda, execution time, timezone, model,
+   Region, and schedule name.
+2. Uses Amazon Bedrock Nova Pro, a large language model (LLM), to interpret
+   the requested natural-language calendar date.
+3. Resolves recognized ordinal-weekday rules locally when possible.
+4. Validates the real date and timezone-aware execution timestamp.
+5. Persists an idempotent plan in DynamoDB.
+6. Creates or replaces one enabled, one-time EventBridge Schedule.
+7. Lets EventBridge invoke the configured target Lambda with `{}`.
+
+The schedule is normally deleted after it runs. It is not a recurring
+downstream schedule. The deployed application may also include an optional
+recurring trigger that invokes the scheduler Lambda periodically; with the
+default Terraform/SAM configuration this trigger is configured on the 1st of
+each month at 1:00 AM Eastern. Terraform can disable it. The SAM template
+creates it enabled unless its infrastructure is edited.
+
+See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed behavior and
+[TEST.md](TEST.md) for validation procedures.
+
+## Project overview
+
+| Component | Responsibility |
+| --- | --- |
+| [src/handler.py](src/handler.py) | Event validation, reference time, job identity, and workflow coordination |
+| [src/bedrock_parser.py](src/bedrock_parser.py) | Local ordinal-weekday resolution and Bedrock calendar interpretation |
+| [src/schedule_description.py](src/schedule_description.py) | Date, DST, timezone, and future-timestamp validation |
+| [src/scheduler.py](src/scheduler.py) | DynamoDB coordination and EventBridge Scheduler create/get/delete operations |
+| [src/state.py](src/state.py) | Durable plans, locks, creation attempts, and schedule ownership records |
+| [src/notifications.py](src/notifications.py) | Optional SES support; not called by the current handler |
+| [test_lambda/app.py](test_lambda/app.py) | Harmless target Lambda that logs and echoes `{}` |
+| [template.yaml](template.yaml) | SAM deployment and monthly trigger resources |
+| [tf/](tf/) | Terraform deployment alternative |
+
+AWS resources include a DynamoDB state table, two Scheduler groups, IAM roles,
+a scheduler Lambda, an optional test target Lambda, and the recurring trigger
+when enabled. Runtime-created schedules belong in the generated-schedule
+group. The recurring trigger belongs in a separate group.
+
+## Input and behavior
+
+An invocation is a single schedule request:
 
 ```json
 {
@@ -113,21 +154,208 @@ All unit-test AWS calls are mocked. These commands do not deploy resources.
 
 ## Deployment configuration
 
-For an all-resources Terraform alternative (including the test target), see
-[tf/README.md](tf/README.md). Choose Terraform or SAM; do not deploy both against
-the same resources.
+Choose SAM or Terraform. Do not deploy both implementations into the same
+account and Region. Deployment creates billable AWS resources and can replace
+a same-name schedule; never run it until an AWS account, profile, and change
+plan have been approved.
 
-Deployment is deliberately not performed here. Before an authorized
-`sam deploy --guided --region us-east-1`, supply:
+### Prerequisites
 
-- `TargetLambdaName`: an existing, unqualified Lambda name in the same account
-  and Region, ending in `-dynScheduler`.
-- `ScheduleInput`: the JSON above with the actual target name, plus
-  `"scheduled_at":"<aws.scheduler.scheduled-time>"` for the monthly trigger.
-  Scheduler replaces that context attribute at invocation time.
-- Access to `amazon.nova-pro-v1:0` in commercial `us-east-1`.
-- Any production failure destinations/alarms and downstream execution retry
-  settings required by your operations policy.
+- Python 3.12 and pip.
+- AWS CLI v2 with credentials for an approved commercial `us-east-1` account.
+- AWS SAM CLI for SAM deployment, or Terraform 1.7 or later for Terraform.
+- Access to Amazon Nova Pro (`amazon.nova-pro-v1:0`) in `us-east-1`.
+- IAM permission to create the resources listed in [template.yaml](template.yaml)
+  or [tf/main.tf](tf/main.tf).
+- For SAM, an existing unqualified target Lambda whose name ends in
+  `-dynScheduler`, in the same account and Region.
+
+Verify the AWS identity and Region before deployment:
+
+```bash
+export AWS_PROFILE=your-approved-profile
+aws sts get-caller-identity
+aws configure get region
+```
+
+Both deployment paths require commercial `us-east-1`; GovCloud-to-commercial
+cross-partition deployment is not supported.
+
+### Option 1: Deploy with SAM
+
+For the simplest test setup, first build and deploy the standalone test target:
+
+```bash
+sam validate --lint --template-file test_lambda/template.yaml --region us-east-1
+sam build \
+  --template-file test_lambda/template.yaml \
+  --build-dir .aws-sam/test-target \
+  --region us-east-1
+sam deploy \
+  --template-file .aws-sam/test-target/template.yaml \
+  --stack-name test-schedule-target \
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --region us-east-1 \
+  --profile your-approved-profile
+```
+
+Confirm the target name:
+
+```bash
+aws lambda get-function \
+  --function-name test-schedule-lambda-dynScheduler \
+  --region us-east-1 \
+  --profile your-approved-profile \
+  --query 'Configuration.[FunctionName,Runtime]' \
+  --output table
+```
+
+Build and validate the scheduler:
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r src/requirements.txt
+SAM_CLI_TELEMETRY=0 sam validate --lint --region us-east-1
+sam build
+```
+
+Deploy interactively for the first installation:
+
+```bash
+sam deploy --guided \
+  --region us-east-1 \
+  --profile your-approved-profile
+```
+
+At the SAM prompts, provide:
+
+- Stack name, for example `dynamic-lambda-scheduler`.
+- `TargetLambdaName`: `test-schedule-lambda-dynScheduler` for the test target.
+- `ScheduleInput`: a JSON object containing the target name and the desired
+  schedule fields. Include
+  `"scheduled_at":"<aws.scheduler.scheduled-time>"` for monthly-trigger
+  invocations; SAM passes this literal to Scheduler, which replaces it.
+- `BedrockModelId`: `amazon.nova-pro-v1:0`.
+- `BedrockRegion`: `us-east-1`.
+- IAM capability confirmation.
+
+For a non-interactive repeat deployment, either retain the guided
+`samconfig.toml` or pass the parameters explicitly:
+
+```bash
+sam deploy \
+  --stack-name dynamic-lambda-scheduler \
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --region us-east-1 \
+  --profile your-approved-profile \
+  --parameter-overrides \
+    TargetLambdaName=test-schedule-lambda-dynScheduler \
+    'ScheduleInput={"schedule_name":"example-monthly-schedule","schedule_description":"the Friday after the 1st Sunday","target_lambda_name":"test-schedule-lambda-dynScheduler","execution_time":"09:00:00","timezone":"America/New_York","bedrock_model_id":"amazon.nova-pro-v1:0","bedrock_region":"us-east-1","scheduled_at":"<aws.scheduler.scheduled-time>"}' \
+    BedrockModelId=amazon.nova-pro-v1:0 \
+    BedrockRegion=us-east-1
+```
+
+Inspect the deployment and invoke the function by name:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name dynamic-lambda-scheduler \
+  --region us-east-1 \
+  --profile your-approved-profile \
+  --query 'Stacks[0].Outputs'
+
+SCHEDULER_ARN="$(aws cloudformation describe-stacks \
+  --stack-name dynamic-lambda-scheduler \
+  --region us-east-1 \
+  --profile your-approved-profile \
+  --query 'Stacks[0].Outputs[?OutputKey==`SchedulerFunctionArn`].OutputValue' \
+  --output text)"
+aws lambda invoke \
+  --function-name "$SCHEDULER_ARN" \
+  --payload file://events/FriAfter1stSun.json \
+  --cli-binary-format raw-in-base64-out \
+  --region us-east-1 \
+  --profile your-approved-profile \
+  response.json
+cat response.json
+```
+
+For a deployed script-based invocation, [invoke.sh](invoke.sh) accepts only
+events under `events/`, but its function name must match the deployed Lambda.
+It is configured for the Terraform function name
+`dynamic-lambda-scheduler-scheduler` unless that variable is changed.
+
+### Option 2: Deploy with Terraform
+
+The Terraform deployment creates the test target and all scheduler resources.
+Detailed configuration and recovery steps are in [tf/README.md](tf/README.md).
+
+From the project root:
+
+```bash
+PYTHON="$PWD/.venv/bin/python" bash tf/build.sh
+cp tf/terraform.tfvars.example tf/terraform.tfvars
+terraform -chdir=tf init
+terraform -chdir=tf fmt -check
+terraform -chdir=tf validate
+terraform -chdir=tf test
+```
+
+Edit `tf/terraform.tfvars` with the approved project name, schedule, time,
+timezone, Bedrock pair, and whether the monthly trigger should start enabled.
+Review credentials and the plan:
+
+```bash
+export AWS_PROFILE=your-approved-profile
+aws sts get-caller-identity
+terraform -chdir=tf plan -out=deployment.tfplan
+```
+
+Apply only after reviewing the account, resource changes, IAM permissions,
+and monthly-trigger state:
+
+```bash
+terraform -chdir=tf apply deployment.tfplan
+```
+
+Invoke the deployed scheduler and inspect the result:
+
+```bash
+terraform -chdir=tf output -raw manual_test_payload \
+  > tf/.build/test-event.json
+aws lambda invoke \
+  --function-name "$(terraform -chdir=tf output -raw scheduler_function_name)" \
+  --payload file://tf/.build/test-event.json \
+  --cli-binary-format raw-in-base64-out \
+  --region us-east-1 \
+  --profile your-approved-profile \
+  tf/.build/scheduler-response.json
+cat tf/.build/scheduler-response.json
+```
+
+Use `terraform -chdir=tf output` to find the state table, schedule group,
+target function, trigger, and role names. The invocation calls real Bedrock,
+writes DynamoDB state, and creates or replaces a real schedule.
+
+### Post-deployment verification
+
+For either deployment path:
+
+1. Confirm the scheduler Lambda exists and CloudWatch has a log group.
+2. Confirm Bedrock model access is enabled for the account/Region.
+3. Invoke manually and verify the response contains `status: created` or
+   `already_exists` and a future `execution_timestamp`.
+4. Inspect the configured schedule group for the returned schedule name.
+5. Invoke the test target directly with `{}` and confirm it logs success.
+6. Check Scheduler and Lambda CloudWatch logs for permission, Bedrock,
+   timeout, DST, or state errors.
+7. If the monthly trigger is enabled, review its next run and timezone.
+
+Do not treat a successful AWS CLI invocation as proof that the Lambda
+succeeded. Read `response.json` or the saved response file and inspect the
+Lambda logs.
 
 The template creates the function, a retained DynamoDB state table, separate
 groups for generated schedules and the monthly trigger, invocation roles, and

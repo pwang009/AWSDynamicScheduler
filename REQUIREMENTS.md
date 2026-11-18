@@ -3,15 +3,17 @@
 ## Confirmed requirements
 
 - Implement an AWS Lambda using Python 3.12.
-- Support exactly one description/target pair per invocation and monthly
-  trigger; do not implement batch configuration.
-- Deploy in commercial `us-east-1` using AWS SAM and DynamoDB-backed creation
+- Support exactly one description/target pair per invocation; do not implement
+  batch configuration. Manual invocation is supported, and a separate recurring
+  EventBridge trigger may invoke the Lambda on a configured schedule.
+- Deploy in commercial `us-east-1` using AWS SAM or Terraform and DynamoDB-backed creation
   attempt tracking, as confirmed for the initial implementation.
 - Provide an alternative Terraform deployment in `tf/` for both Lambdas and
   their supporting IAM, logging, DynamoDB, schedule groups, and monthly
   trigger. Terraform and SAM must not manage the same resources simultaneously.
-- Trigger the scheduler Lambda at 1:00 AM on the 1st of each month in
-  `America/New_York` (EST in winter, EDT in summer, as previously confirmed).
+- Optionally trigger the scheduler Lambda at 1:00 AM on the 1st of each month
+  in `America/New_York` (EST in winter, EDT in summer). Terraform exposes this
+  as `monthly_trigger_enabled`; SAM creates the trigger enabled.
 - Accept:
   1. A schedule description, for example "the Friday after the 1st Sunday".
   2. The name of a target Lambda to invoke. Its name must end in

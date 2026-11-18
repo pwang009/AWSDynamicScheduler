@@ -96,10 +96,9 @@ consistent. Verify scheduled invocations in the target's CloudWatch log group
 
 ## Invoke the deployed scheduler from your laptop
 
-Use a JSON payload in [events/](events/) to invoke the scheduler already
-deployed in CBSB. Install AWS CLI v2 and configure your AWS defaults or environment.
-Docker, SAM, and a local environment-variable file are not needed for this
-method; the deployed Lambda uses its own role and environment.
+Use a JSON payload in [events/](events/) to invoke a deployed scheduler Lambda.
+Install AWS CLI v2 and configure an approved AWS profile and Region. Docker,
+SAM, and a local environment-variable file are not needed for this method.
 
 From the project root:
 
@@ -182,8 +181,8 @@ avoid unintended recurring invocations.
 
 ### Create the event file
 
-Use [events/test.json](events/test.json), adjusting the following values if
-testing against a different deployment:
+Use an event file in [events/](events/) or create a test-only JSON file,
+adjusting the following values if testing against a different deployment:
 
 ```json
 {
@@ -252,7 +251,7 @@ Check that the returned account is the intended test account before continuing:
 
 ```bash
 sam local invoke SchedulerFunction \
-  --event events/test.json \
+  --event events/FriAfter1stSun.json \
   --env-vars env.local.json \
   --profile your-test-profile \
   --region us-east-1
