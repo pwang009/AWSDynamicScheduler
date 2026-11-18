@@ -108,7 +108,7 @@ aws sts get-caller-identity
 
 ./invoke.sh currentdatetest.json
 # An events/ prefix and filenames containing spaces are also accepted:
-./invoke.sh "events/FriAfter1stSun copy.json"
+./invoke.sh events/FriAfter1stSun.json
 ```
 
 [invoke.sh](invoke.sh) prints the Lambda response and writes it to the
@@ -136,6 +136,15 @@ This makes real Bedrock calls, writes state, and creates/replaces
 `example-monthly-schedule` in the generated schedule group. Change the
 `schedule_name` in the payload if you want a separate test name. Email remains
 disabled. The target will run at the resolved future date/time.
+
+To intentionally rerun the same schedule name, add a new `request_id` field
+to the JSON payload (for example `"request_id": "manual-2026-11-17-001"`), then
+run the same script. Change this ID for each new request; retain it and all
+other inputs when retrying that request. New IDs have separate plans and
+creation budgets. Without an ID, existing monthly duplicate-job rules apply.
+The script sends the event unchanged; it does not generate or modify IDs.
+Retries of an already-successful request still cannot recreate a schedule
+that a newer request has replaced. A new ID is the supported rerun mechanism.
 
 Expected: no `FunctionError` in the CLI metadata, and `status: "created"` or
 `"already_exists"` in the response with the schedule name/ARN and execution

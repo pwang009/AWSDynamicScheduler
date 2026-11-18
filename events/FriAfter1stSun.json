@@ -1,6 +1,6 @@
 {
   "schedule_name": "example-monthly-schedule1",
-  "schedule_description": "the Friday after the 1st Sunday next month",
+  "schedule_description": "the Friday after the 1st Sunday",
   "target_lambda_name": "test-schedule-lambda-dynScheduler",
   "execution_time": "09:00:00",
   "timezone": "America/New_York",

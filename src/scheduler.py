@@ -96,7 +96,10 @@ def replace_schedule(
         if arn:
             return result(arn, "already_exists")
         if recorded.get("schedule_arn"):
-            raise RuntimeError("Previously created schedule is missing or replaced; refusing to recreate it")
+            raise RuntimeError(
+                "Previously created schedule is missing or replaced; refusing to recreate it. "
+                "Use a new request_id for an intentional rerun."
+            )
         if datetime.fromisoformat(plan["execution_timestamp"]) <= datetime.now(timezone.utc):
             raise ValueError("Resolved execution timestamp has expired")
         attempt = state.reserve(key, 3)

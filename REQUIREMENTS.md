@@ -23,6 +23,9 @@
      this schedule.
   6. A Bedrock Region; use `us-east-1` for this schedule.
   7. A schedule name, using 1-64 letters, digits, underscores, dots, or hyphens.
+- Accept optional `request_id` for intentional reruns: 1-64 letters, digits,
+  underscores, dots, or hyphens. A new ID gets a fresh plan, creation-attempt
+  budget, and AWS idempotency token without changing the schedule name.
 - For a new logical job, delete any schedule with the input name in the
   configured Scheduler group, then create the new schedule under that name.
   Other groups must not be modified.
@@ -124,6 +127,18 @@ across redeliveries. Persist the first resolved plan for the input configuration
 and reference month so repeated deliveries cannot choose a different date.
 Manual calls may omit `scheduled_at`; they use the invocation time as their
 reference and reuse any existing plan for that configuration/reference month.
+
+When `request_id` is present, include it in the validated inputs and derive
+the job ID from those inputs alone, excluding the reference month. Reusing the
+same ID and unchanged inputs must reuse the saved plan across month boundaries.
+Changing the ID creates a new logical request, with a new Bedrock call and
+independent durable creation attempts and AWS tokens. Preserve the existing
+hash input exactly when the ID is omitted so deployed jobs remain compatible.
+Return the ID in saved plans and responses; reject invalid IDs before AWS calls.
+Do not generate IDs automatically in Lambda or reset/delete previous state.
+The same previously successful request must still refuse recreation if its
+schedule is missing or has been replaced, protecting newer replacements from
+retries of that completed request. An intentional rerun must use a new ID.
 
 Example success response fields:
 
@@ -234,6 +249,8 @@ advance to its next occurrence when necessary. Keep existing weekday semantics:
 "after" is strict (the same weekday means seven days later), and offsets may
 cross months/years. Explicit dates and "this"/"next" periods must not be silently
 advanced if their execution is already past.
+Recognized ordinal-weekday rules such as "the Friday after the 1st Sunday" are
+resolved in Python from the reference month and timezone, independent of Bedrock.
 
 "Today" must resolve to the local reference date, not be rejected solely for
 being the same calendar date. At 14:28 Eastern on November 17, 2026, "today"
@@ -297,13 +314,15 @@ EventBridge rule for the target invocation:
 - Set the target Lambda ARN and a Scheduler role permitted to invoke it.
 - Configure `ActionAfterCompletion` as `DELETE`.
 - Use the required input `schedule_name` verbatim.
-- For a new logical job (input configuration/reference month), delete the
+- For a new logical job (input configuration/reference month without an explicit
+  ID, or input configuration including an explicit request ID), delete the
   existing same-name schedule in the configured group, even if its settings
   match. Do not delete the replacement again on duplicate delivery of the
   same job. Mark schedules with a job-specific description and verify their
   expression, timezone, target, and invocation settings when reconciling.
 - Persist attempt and notification state per job, not just per schedule name.
-  Use a job-specific creation token so a later month can replace the same name.
+  Use a job-specific creation token so a later month or new explicit request
+  can replace the same name.
   Serialize same-name replacements using a group/name DynamoDB lease.
 - Fail explicitly if deletion fails permanently. Deletion and creation are
   not atomic: if creation fails after deletion, the old schedule is not
@@ -423,8 +442,13 @@ intended target resources.
   schedules with matching settings. Permanent deletion failure prevents
   creation; a deletion-time not-found race permits creation.
 - Duplicate deliveries reuse the same job's verified replacement without
-  deleting it. New months/configurations get independent tokens and retry
-  budgets despite reusing the schedule name.
+  deleting it. New months/configurations without an explicit ID, or new
+  explicit IDs, get independent tokens and retry budgets despite reusing the name.
+- Verify new IDs resolve fresh plans and replace the same name, retries with the
+  same inputs/ID reuse their original plan even across months, and retries of a
+  previously completed request cannot overwrite its newer replacement.
+- Verify omitted IDs preserve existing job hashes and reject invalid supplied
+  IDs, including empty/nonstring IDs, whitespace, slashes, and excessive length.
 - Verify expired plans and lock contention cannot delete an existing schedule.
 - Transient creation failures permit exactly three total attempts when all
   fail; success stops retries early, and permanent failures are not retried.

@@ -27,7 +27,7 @@ FIELDS = (
 
 
 def validate_event(event: object) -> dict[str, str]:
-    if not isinstance(event, dict) or set(event) - {*FIELDS, "scheduled_at"}:
+    if not isinstance(event, dict) or set(event) - {*FIELDS, "scheduled_at", "request_id"}:
         raise ValueError("Expected one description/target object with only supported fields")
     for field in FIELDS:
         if not isinstance(event.get(field), str) or not event[field].strip():
@@ -51,7 +51,13 @@ def validate_event(event: object) -> dict[str, str]:
         raise ValueError("Target Lambda does not match the deployment-approved ARN")
     if len(event["schedule_description"]) > 4000:
         raise ValueError("Schedule description exceeds 4000 characters")
-    return {field: event[field] for field in FIELDS}
+    inputs = {field: event[field] for field in FIELDS}
+    if "request_id" in event:
+        request_id = event["request_id"]
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", request_id):
+            raise ValueError("request_id must be 1-64 letters, digits, underscores, dots, or hyphens")
+        inputs["request_id"] = request_id
+    return inputs
 
 
 def lambda_handler(event: object, context: Any) -> dict[str, str]:
@@ -65,7 +71,8 @@ def lambda_handler(event: object, context: Any) -> dict[str, str]:
         if reference.tzinfo is None or reference > datetime.now(timezone.utc):
             raise ValueError("scheduled_at must be timezone-aware and not in the future")
     month = reference.astimezone(ZoneInfo(inputs["timezone"])).strftime("%Y-%m")
-    job = hashlib.sha256(json.dumps([inputs, month], sort_keys=True).encode()).hexdigest()
+    identity = [inputs] if "request_id" in inputs else [inputs, month]
+    job = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     config = Config(connect_timeout=3, read_timeout=20, retries={"total_max_attempts": 1})
     table = boto3.resource("dynamodb", config=config).Table(os.environ["STATE_TABLE"])
     state = State(table)

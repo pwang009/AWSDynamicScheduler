@@ -1,9 +1,11 @@
+import calendar
 import json
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from schedule_description import validate_date
+from schedule_description import local_timestamp, validate_date
 
 
 PROMPT = """Resolve natural-language scheduling descriptions to one execution date.
@@ -49,10 +51,75 @@ def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+ORDINALS = {
+    "1st": 1, "first": 1,
+    "2nd": 2, "second": 2,
+    "3rd": 3, "third": 3,
+    "4th": 4, "fourth": 4,
+    "5th": 5, "fifth": 5,
+}
+WEEKDAYS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+ORDINAL_AFTER_PATTERN = re.compile(
+    r"^the\s+(?P<target>[a-z]+)\s+after\s+(?:the\s+)?"
+    r"(?P<ordinal>1st|2nd|3rd|4th|5th|first|second|third|fourth|fifth)\s+"
+    r"(?P<anchor>[a-z]+)$",
+    re.IGNORECASE,
+)
+
+
+def next_ordinal_weekday_after(
+    description: str, reference: datetime, execution_time: str, zone: ZoneInfo,
+) -> date | None:
+    rule = description.split(", current date:", 1)[0].strip()
+    match = ORDINAL_AFTER_PATTERN.fullmatch(rule)
+    if not match:
+        return None
+
+    target = WEEKDAYS.get(match.group("target").lower())
+    anchor = WEEKDAYS.get(match.group("anchor").lower())
+    ordinal = ORDINALS.get(match.group("ordinal").lower())
+    if target is None or anchor is None or ordinal is None:
+        return None
+
+    local_reference = reference.astimezone(zone)
+    clock = datetime.strptime(execution_time, "%H:%M:%S").time()
+    year, month = local_reference.year, local_reference.month
+    for _ in range(24):
+        first_weekday = date(year, month, 1).weekday()
+        anchor_day = 1 + (anchor - first_weekday) % 7 + (ordinal - 1) * 7
+        if anchor_day <= calendar.monthrange(year, month)[1]:
+            anchor_date = date(year, month, anchor_day)
+            offset = (target - anchor) % 7
+            if offset == 0:
+                offset = 7
+            candidate_date = anchor_date + timedelta(days=offset)
+            try:
+                candidate = local_timestamp(datetime.combine(candidate_date, clock), zone)
+            except ValueError:
+                candidate = None
+            if candidate is not None and candidate.astimezone(timezone.utc) > reference.astimezone(timezone.utc):
+                return candidate_date
+
+        if month == 12:
+            year, month = year + 1, 1
+        else:
+            month += 1
+    raise ValueError("No future occurrence exists for the recurring weekday rule")
+
+
 def parse_description(
     client: Any, model_id: str, description: str,
     reference: datetime, execution_time: str, zone: ZoneInfo,
 ) -> date:
+    recurring_date = next_ordinal_weekday_after(
+        description, reference, execution_time, zone,
+    )
+    if recurring_date is not None:
+        return recurring_date
+
     response = client.converse(
         modelId=model_id,
         system=[{"text": PROMPT}],

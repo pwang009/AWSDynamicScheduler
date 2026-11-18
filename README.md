@@ -42,6 +42,8 @@ For a November 17, 2026 reference date, examples include:
 
 Calendar quarters end March 31, June 30, September 30, and December 31.
 "This quarter" contains the local reference date; "next quarter" follows it.
+Recognized recurring ordinal-weekday rules, such as "the Friday after the 1st
+Sunday", are resolved locally and advance to the next future month when needed.
 Recurring descriptions select the next future occurrence; explicit dates or
 explicit "this"/"next" periods are not silently rolled forward if already past.
 Ambiguous wording, unspecified fiscal/holiday calendars, conflicting times or
@@ -61,11 +63,36 @@ timestamp, execution time, and timezone so the model can evaluate same-day times
 Retries continue to reuse saved dates rather than reinterpret descriptions.
 
 `schedule_name` is required: 1-64 letters, digits, underscores, dots, or
-hyphens. For each new logical job (input configuration/reference month),
+hyphens. For each new logical job (input configuration/reference month, or an
+explicit request ID as described below),
 delete any schedule with that name in the configured group, then create the
 new schedule. This applies even when the previous schedule has matching
 settings. Other groups are untouched. Deletion and creation are not atomic:
 if creation fails after deletion, the old schedule is not restored.
+
+### Intentionally rerun the same schedule
+
+Add an optional `request_id` to the event, for example:
+
+```json
+"request_id": "manual-2026-11-17-001"
+```
+
+Use a **new ID for each intentional rerun**, even with the same schedule name
+and description. Each gets a fresh Bedrock interpretation, saved plan,
+three-attempt creation budget, and AWS idempotency token. This can replace the
+current same-name schedule. IDs allow 1-64 letters, digits, underscores, dots,
+or hyphens, and are included in saved plans and responses.
+
+For retries, reuse the **same ID and unchanged inputs**. Explicit-ID jobs are
+independent of the reference month, so retries across a month boundary still
+reuse the original saved plan. A previously successful request whose schedule
+has since been replaced remains blocked; give an intentional replacement a
+new ID instead of removing that safeguard. Do not generate IDs inside Lambda.
+
+Without `request_id`, the existing input-configuration/reference-month identity
+is unchanged, including existing DynamoDB records and monthly trigger behavior.
+No state deletion or Terraform changes are needed.
 
 ## Local checks
 

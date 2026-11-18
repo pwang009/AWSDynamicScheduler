@@ -15,6 +15,15 @@ def parse(client, description):
 
 
 class ParserTests(unittest.TestCase):
+    def test_ordinal_weekday_rule_resolves_next_month_without_bedrock(self):
+        client = Mock()
+        result = parse(
+            client,
+            "the Friday after the 1st Sunday, current date: 11/17/2026",
+        )
+        self.assertEqual(result, date(2026, 12, 11))
+        client.converse.assert_not_called()
+
     def test_valid_date_and_request(self):
         client = Mock()
         client.converse.return_value = {
