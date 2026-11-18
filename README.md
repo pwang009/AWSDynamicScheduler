@@ -7,7 +7,7 @@ The scheduler Lambda:
 
 1. Validates the description, target Lambda, execution time, timezone, model,
    Region, and schedule name.
-2. Uses Amazon Bedrock Nova Pro, a large language model (LLM), to interpret
+2. Uses Amazon Bedrock Nova Pro, a large language model (**LLM**), to interpret
    the requested natural-language calendar date.
 3. Resolves recognized ordinal-weekday rules locally when possible.
 4. Validates the real date and timezone-aware execution timestamp.
